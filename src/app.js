@@ -57,22 +57,22 @@ const dynamicFlow = addKeyword(EVENTS.WELCOME)
                 mensaje: '📊 Aquí tienes el brochure del área Contable.'
             },
             'legal': {
-                id: '184wOk8NESI1YOMxHyq7kVO6_RA39xPgM',
+                id: '1gXgh7ugCEC3l4JvbadhrPiwQMDZCuTvB',
                 nombre: 'brochure-legal.pdf',
                 mensaje: '⚖️ Aquí tienes el brochure del área Legal.'
             },
             'branding': {
-                id: 'ID_BRANDING',
+                id: 'TU_ID_BRANDING',
                 nombre: 'brochure-branding.pdf',
                 mensaje: '🎨 Aquí tienes el brochure del área de Branding.'
             },
             'página web': {
-                id: 'ID_WEB',
+                id: 'TU_ID_WEB',
                 nombre: 'brochure-pagina-web.pdf',
                 mensaje: '💻 Aquí tienes el brochure del servicio de Página Web (TI).'
             },
             'gestión humana': {
-                id: 'ID_GH',
+                id: 'TU_ID_GH',
                 nombre: 'brochure-gestion-humana.pdf',
                 mensaje: '👥 Aquí tienes el brochure del área de Gestión Humana.'
             }
@@ -99,11 +99,28 @@ const dynamicFlow = addKeyword(EVENTS.WELCOME)
             }
 
             const info = brochures[session.lastBrochure]
-            const url = `https://drive.google.com/uc?export=download&id=${info.id}`
 
-            await flowDynamic(info.mensaje)
-            await provider.sendFile(phoneNumber, url, info.nombre, info.mensaje)
-            console.log(`📎 Brochure ${info.nombre} enviado al usuario ${phoneNumber}`)
+            // ✅ Generar URL directa y verificar formato correcto
+            const url = `https://drive.google.com/uc?export=download&id=${info.id}`
+            console.log(`📎 Preparando envío del brochure: ${info.nombre} (${url})`)
+
+            // ✅ Validar que el enlace de Drive parezca válido
+            if (!info.id || info.id.length < 10) {
+                await flowDynamic('⚠️ Error: El brochure no está configurado correctamente. Contacta con el administrador.')
+                console.error(`❌ ID de Google Drive inválido para el área ${session.lastBrochure}`)
+                return
+            }
+
+            try {
+                await flowDynamic(info.mensaje)
+                await provider.sendFile(phoneNumber, url, info.nombre, info.mensaje, {
+                    mimetype: 'application/pdf'
+                })
+                console.log(`✅ Brochure ${info.nombre} enviado correctamente a ${phoneNumber}`)
+            } catch (err) {
+                console.error(`❌ Error al enviar brochure a ${phoneNumber}:`, err)
+                await flowDynamic('🚫 No se pudo enviar el brochure en este momento. Inténtalo de nuevo más tarde.')
+            }
 
             session.lastBrochure = null // limpiamos para evitar duplicados
             userSession.set(phoneNumber, session)
@@ -146,6 +163,7 @@ const dynamicFlow = addKeyword(EVENTS.WELCOME)
         }
     })
 
+// 🚀 MAIN
 const main = async () => {
     await googleSheetService.getFlows()
     await googleSheetService.getPrompts()
@@ -176,7 +194,7 @@ const main = async () => {
 
     scheduledMessageService.initialize(adapterProvider)
 
-    // Rutas HTTP del bot
+    // 🌐 Rutas HTTP del bot
     adapterProvider.server.post(
         '/v1/messages',
         handleCtx(async (bot, req, res) => {
@@ -246,3 +264,4 @@ const main = async () => {
 }
 
 main()
+
