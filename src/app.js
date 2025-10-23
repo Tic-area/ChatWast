@@ -32,7 +32,7 @@ const dynamicFlow = addKeyword(EVENTS.WELCOME)
                 mensaje: '📊 Aquí tienes el brochure del área Contable.'
             },
             'legal': {
-                id: 'ID_LEGAL',
+                id: '184wOk8NESI1YOMxHyq7kVO6_RA39xPgM',
                 nombre: 'brochure-legal.pdf',
                 mensaje: '⚖️ Aquí tienes el brochure del área Legal.'
             },
