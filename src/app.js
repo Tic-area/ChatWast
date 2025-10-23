@@ -9,22 +9,81 @@ import scheduledMessageService from './scheduled-messages.js'
 
 const PORT = process.env.PORT ?? 3008
 
+const userSession = new Map() // guarda el último brochure solicitado por usuario
+
 const dynamicFlow = addKeyword(EVENTS.WELCOME)
-    .addAction(async (ctx, { flowDynamic }) => {
+    .addAction(async (ctx, { flowDynamic, provider }) => {
         const flows = await googleSheetService.getFlows()
         const userInput = ctx.body.toLowerCase().trim()
+        const phoneNumber = ctx.from
 
+        // Buscar coincidencia con palabras clave de la hoja
         const triggeredFlow = flows.find(f => {
             if (!f.addKeyword) return false
             const sheetKeyword = f.addKeyword.toLowerCase().trim()
             return userInput.includes(sheetKeyword)
         })
 
+        // 📄 Brochures por área
+        const brochures = {
+            'contable': {
+                id: '184wOk8NESI1YOMxHyq7kVO6_RA39xPgM',
+                nombre: 'brochure-contable.pdf',
+                mensaje: '📊 Aquí tienes el brochure del área Contable.'
+            },
+            'legal': {
+                id: 'ID_LEGAL',
+                nombre: 'brochure-legal.pdf',
+                mensaje: '⚖️ Aquí tienes el brochure del área Legal.'
+            },
+            'branding': {
+                id: 'ID_BRANDING',
+                nombre: 'brochure-branding.pdf',
+                mensaje: '🎨 Aquí tienes el brochure del área de Branding.'
+            },
+            'página web': {
+                id: 'ID_WEB',
+                nombre: 'brochure-pagina-web.pdf',
+                mensaje: '💻 Aquí tienes el brochure del servicio de Página Web (TI).'
+            },
+            'gestión humana': {
+                id: 'ID_GH',
+                nombre: 'brochure-gestion-humana.pdf',
+                mensaje: '👥 Aquí tienes el brochure del área de Gestión Humana.'
+            }
+        }
+
+        // Recuperar o crear sesión del usuario
+        const session = userSession.get(phoneNumber) || {}
+
+        // 🧠 Si el mensaje contiene "brochure" + nombre de área, guardamos ese contexto
+        for (const area of Object.keys(brochures)) {
+            if (userInput.includes('brochure') && userInput.includes(area)) {
+                session.lastBrochure = area
+                userSession.set(phoneNumber, session)
+                console.log(`🗂️ Usuario ${phoneNumber} solicitó brochure de ${area}`)
+                break
+            }
+        }
+
+        // 📤 Si el usuario responde "sí" y hay un brochure pendiente, se envía
+        if ((userInput === 'sí' || userInput === 'si' || userInput.includes('claro')) && session.lastBrochure) {
+            const info = brochures[session.lastBrochure]
+            const url = `https://drive.google.com/uc?export=download&id=${info.id}`
+
+            await flowDynamic(info.mensaje)
+            await provider.sendFile(phoneNumber, url, info.nombre, info.mensaje)
+            console.log(`📎 Brochure ${info.nombre} enviado al usuario ${phoneNumber}`)
+
+            session.lastBrochure = null // limpiamos para evitar duplicados
+            userSession.set(phoneNumber, session)
+        }
+
+        // 💬 Flujo normal del prompt (respuestas desde Google Sheets)
         if (triggeredFlow) {
             const answer = triggeredFlow.addAnswer
             const mediaUrl = triggeredFlow.media && triggeredFlow.media.trim()
-            const phoneNumber = ctx.from
-            
+
             await chatHistoryService.saveMessage(phoneNumber, 'user', userInput)
             await chatHistoryService.saveMessage(phoneNumber, 'assistant', answer)
 
@@ -34,8 +93,8 @@ const dynamicFlow = addKeyword(EVENTS.WELCOME)
                 await flowDynamic(answer)
             }
         } else {
+            // 🤖 Si no hay coincidencias, responde la IA
             console.log('🤖 No se encontró palabra clave, derivando a la IA...')
-            const phoneNumber = ctx.from
             const aiResponse = await groqService.getResponse(userInput, phoneNumber)
             await flowDynamic(aiResponse)
         }
