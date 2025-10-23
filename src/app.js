@@ -9,20 +9,45 @@ import scheduledMessageService from './scheduled-messages.js'
 
 const PORT = process.env.PORT ?? 3008
 
-const userSession = new Map() // guarda el último brochure solicitado por usuario
+// 🧠 Manejadores de sesión e inactividad
+const userSession = new Map() // guarda último brochure solicitado por usuario
+const lastMessageTime = new Map() // guarda hora del último mensaje
+const activeUsers = new Map() // usuarios activos que pueden recibir mensajes
+
+// ⏱️ Configuración de tiempos
+const TIMEOUT_MINUTES = 5 // reinicio total tras 5 minutos
+const USER_RESPONSE_TIMEOUT = 60 * 1000 // pausa tras 60 segundos
 
 const dynamicFlow = addKeyword(EVENTS.WELCOME)
     .addAction(async (ctx, { flowDynamic, provider }) => {
         const flows = await googleSheetService.getFlows()
         const userInput = ctx.body.toLowerCase().trim()
         const phoneNumber = ctx.from
+        const now = Date.now()
 
-        // Buscar coincidencia con palabras clave de la hoja
-        const triggeredFlow = flows.find(f => {
-            if (!f.addKeyword) return false
-            const sheetKeyword = f.addKeyword.toLowerCase().trim()
-            return userInput.includes(sheetKeyword)
-        })
+        // 🧩 Control de inactividad (reinicio a los 5 min)
+        if (lastMessageTime.has(phoneNumber)) {
+            const diffMinutes = (now - lastMessageTime.get(phoneNumber)) / (1000 * 60)
+            if (diffMinutes > TIMEOUT_MINUTES) {
+                await chatHistoryService.clearHistory(phoneNumber)
+                await flowDynamic("💤 Tu sesión anterior fue cerrada por inactividad. Empecemos de nuevo.")
+                await flowDynamic("👋 ¿En qué área deseas recibir información? (Legal, Contable, Branding o Página Web)")
+                lastMessageTime.set(phoneNumber, now)
+                activeUsers.set(phoneNumber, true)
+                return
+            }
+        }
+        lastMessageTime.set(phoneNumber, now)
+        activeUsers.set(phoneNumber, true)
+
+        // ⏸️ Pausar mensajes automáticos si no responde en 60s
+        setTimeout(() => {
+            const last = lastMessageTime.get(phoneNumber)
+            if (Date.now() - last > USER_RESPONSE_TIMEOUT) {
+                activeUsers.set(phoneNumber, false)
+                console.log(`⏸️ Usuario ${phoneNumber} marcado como inactivo por falta de respuesta`)
+            }
+        }, USER_RESPONSE_TIMEOUT)
 
         // 📄 Brochures por área
         const brochures = {
@@ -68,6 +93,11 @@ const dynamicFlow = addKeyword(EVENTS.WELCOME)
 
         // 📤 Si el usuario responde "sí" y hay un brochure pendiente, se envía
         if ((userInput === 'sí' || userInput === 'si' || userInput.includes('claro')) && session.lastBrochure) {
+            if (!activeUsers.get(phoneNumber)) {
+                console.log(`🚫 Usuario ${phoneNumber} inactivo. No se envía brochure.`)
+                return
+            }
+
             const info = brochures[session.lastBrochure]
             const url = `https://drive.google.com/uc?export=download&id=${info.id}`
 
@@ -80,7 +110,18 @@ const dynamicFlow = addKeyword(EVENTS.WELCOME)
         }
 
         // 💬 Flujo normal del prompt (respuestas desde Google Sheets)
+        const triggeredFlow = flows.find(f => {
+            if (!f.addKeyword) return false
+            const sheetKeyword = f.addKeyword.toLowerCase().trim()
+            return userInput.includes(sheetKeyword)
+        })
+
         if (triggeredFlow) {
+            if (!activeUsers.get(phoneNumber)) {
+                console.log(`🚫 Usuario ${phoneNumber} inactivo. No se envía respuesta del flujo.`)
+                return
+            }
+
             const answer = triggeredFlow.addAnswer
             const mediaUrl = triggeredFlow.media && triggeredFlow.media.trim()
 
@@ -94,6 +135,11 @@ const dynamicFlow = addKeyword(EVENTS.WELCOME)
             }
         } else {
             // 🤖 Si no hay coincidencias, responde la IA
+            if (!activeUsers.get(phoneNumber)) {
+                console.log(`🚫 Usuario ${phoneNumber} inactivo. No se envía respuesta de IA.`)
+                return
+            }
+
             console.log('🤖 No se encontró palabra clave, derivando a la IA...')
             const aiResponse = await groqService.getResponse(userInput, phoneNumber)
             await flowDynamic(aiResponse)
@@ -104,21 +150,22 @@ const main = async () => {
     await googleSheetService.getFlows()
     await googleSheetService.getPrompts()
     await googleSheetService.getScheduledMessages()
-    
+
+    // 🧹 Limpieza automática cada 24h
     setInterval(async () => {
         console.log('🧹 Iniciando limpieza automática del historial...')
         const deletedCount = await chatHistoryService.cleanOldHistories()
         console.log(`🧹 Limpieza completada. Archivos eliminados: ${deletedCount}`)
     }, 24 * 60 * 60 * 1000)
-    
+
     const stats = await chatHistoryService.getStats()
     console.log('📊 Estadísticas del historial:', stats)
-    
+
     const scheduledStats = await scheduledMessageService.getStats()
     console.log('📅 Estadísticas de mensajes programados:', scheduledStats)
 
     const adapterFlow = createFlow([dynamicFlow])
-    const adapterProvider = createProvider(Provider,{version: [2, 3000, 1025190524]})
+    const adapterProvider = createProvider(Provider, { version: [2, 3000, 1025190524] })
     const adapterDB = new Database()
 
     const { handleCtx, httpServer } = await createBot({
@@ -126,10 +173,10 @@ const main = async () => {
         provider: adapterProvider,
         database: adapterDB,
     })
-    
-    // Inicializar servicio de mensajes programados
+
     scheduledMessageService.initialize(adapterProvider)
 
+    // Rutas HTTP del bot
     adapterProvider.server.post(
         '/v1/messages',
         handleCtx(async (bot, req, res) => {
@@ -163,7 +210,6 @@ const main = async () => {
             const { number, intent } = req.body
             if (intent === 'remove') bot.blacklist.remove(number)
             if (intent === 'add') bot.blacklist.add(number)
-
             res.writeHead(200, { 'Content-Type': 'application/json' })
             return res.end(JSON.stringify({ status: 'ok', number, intent }))
         })
